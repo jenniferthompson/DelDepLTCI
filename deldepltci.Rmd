@@ -38,6 +38,18 @@ suppressPackageStartupMessages(library(JTHelpers))
 ## Analysis data sets are stored in parent directory
 load("..//braindata.Rdata")
 
+## Data management:
+## - Make frailty numeric; will be treated as continuous in models
+## - Race will only be used in imputation, and our population is overwhelmingly
+##   white; combine all non-white patients into one category
+brain.oneobs <- brain.oneobs %>%
+  mutate(
+    frailty = as.numeric(substr(as.character(frailty), 1, 1)),
+    race.wb = factor(ifelse(is.na(race.wb), NA,
+                     ifelse(race.wb == "White", 1, 2)),
+                     levels = 1:2, labels = c("White", "Non-White"))
+  )
+
 ## Patients with this level of withdrawal have no data; they'll be excluded
 wd_nodata <- c(
   "2. W/D from Participation and All Data Collected",
@@ -70,16 +82,7 @@ df_dcfds <- brain.oneobs %>%
   ## Keep all variables involved in model, plus additional variables that may
   ## be helpful during imputation
   dplyr::select(id, one_of(dcfd_vars),
-                adl.e, faq.e, bmi, race.wb, sofa, smoke, alcohol) %>%
-  mutate(
-    ## Numeric version of frailty - treat as continuous
-    frailty = as.numeric(substr(as.character(frailty), 1, 1)),
-    ## We're only using race for imputation, not adjusting, and there are only
-    ## four patients who are neither black nor white. Combine these with Black.
-    race.wb = factor(ifelse(is.na(race.wb), NA,
-                     ifelse(race.wb == "White", 1, 2)),
-                     levels = 1:2, labels = c("White", "Non-White"))
-  )
+                adl.e, faq.e, bmi, race.wb, sofa, smoke, alcohol)
 
 dd_dcfds <- datadist(df_dcfds)
 options(datadist = "dd_dcfds")
@@ -205,5 +208,70 @@ A pre-admission history of depression, as ascertained by surrogate questionnaire
 
 ```{r dcfd_results, results = "asis"}
 print_html(dcfd_ht)
+
+```
+
+# Depression vs Global Cognition after Hospitalization
+
+```{r ltoutcomes_prep, results = "hide"}
+## -- Datasets for running long-term outcome models ----------------------------
+## Patients will be included in long-term models at a given time point if they
+## have *any* followup assessment data
+lt_outcomes <- c("bdi.totscore", "bpi.intense", "bpi.inter", "pcl.totscore",
+                 "caps.score", "mmse.tscore", "trail.a.tscore",
+                 "trail.b.tscore", "rbans.immmemory.tscore",
+                 "rbans.visuo.tscore", "rbans.language.tscore",
+                 "rbans.attention.tscore", "rbans.delayedmem.tscore",
+                 "rbans.global.score", "faq.totscore", "adl.totscore",
+                 "sf36.pcs", "sf36.pcs")
+
+## Indicator for whether patient had any of above at each followup time point
+brain.fu$any_outcomes <- rowSums(!is.na(brain.fu[,lt_outcomes])) > 0
+
+## Variables involved in model
+rbans_vars <- c("hx.depression", "rbans.global.score", "age.enroll", "e4.type",
+                "edu", "iqcode.score.e", "charlson.score", "stroke.risk",
+                "mean.modsofa.icu", "del.s.imp", "coma.s.imp", "ints.sat.l90.s",
+                "icudays.sevseptic.s", "bdi.totscore")
+
+bdi_vars <- c("hx.depression", "bdi.totscore", "age.enroll", "sex.pp",
+              "charlson.score", "stroke.risk", "iqcode.score.e",
+              "mean.modsofa.icu")
+
+## Starting point data set for all long-term outcomes: merge variables from
+## brain.oneobs onto brain.fu (this would be inefficient if our data were very
+## large... but it's not)
+df_ltbase <- brain.fu %>%
+  dplyr::select(id, fu.period, any_outcomes,
+                one_of(rbans_vars), one_of(bdi_vars),
+                adl.totscore, faq.totscore, frailty.fu,
+                matches("^rbans\\..+\\.tscore$"),
+                matches("^trail\\.[a|b]\\.tscore$"),
+                sf36.pcs, sf36.mcs) %>%
+  left_join(
+    dplyr::select(
+      brain.oneobs,
+      id, one_of(rbans_vars), one_of(bdi_vars), one_of(dcfd_vars),
+      bmi, race.wb, frailty, sofa, smoke, alcohol
+    ),
+    by = "id"
+  ) %>%
+  mutate(frailty.fu = as.numeric(substr(as.character(frailty.fu), 1, 1)))
+
+## Create datasets for 3&12m models, keeping only pts w/ at least some asmt data
+df_lt3 <- df_ltbase %>%
+  filter(fu.period == "3 Month" & any_outcomes) %>%
+  dplyr::select(-fu.period, -any_outcomes)
+df_lt12 <- df_ltbase %>%
+  filter(fu.period == "12 Month" & any_outcomes) %>%
+  dplyr::select(-fu.period, -any_outcomes)
+
+## Create a single datadist for long-term outcomes, keeping all patients who
+## had assessment data at either time point
+dd_lt <- df_ltbase %>%
+  filter(fu.period %in% paste(c(3, 12), "Month") & any_outcomes) %>%
+  datadist()
+
+options(datadist = "dd_lt")
 
 ```
