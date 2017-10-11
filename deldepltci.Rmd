@@ -1,0 +1,209 @@
+---
+title: "Delirium, Depression and LTCI"
+output:
+  html_notebook:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    theme: yeti
+---
+
+# Description of Project
+
+In its early stages, this analysis aims to look at the relationship between a pre-admission history of depression in BRAIN-ICU patients, as reported by surrogates, vs outcomes in the hospital and at long-term followup.
+
+Currently, we will look at pre-admission history of depression versus the following outcomes:
+
+- Brain dysfunction during hospital admission, defined as days alive and free of delirium and coma (DCFDs) during the 14 days after study enrollment
+- Global cognition after critical illness, defined by RBANS Global scores at 3 and 12 months after hospital discharge
+- Severity of depression after critical illness, defined by Beck Depression Inventory (BDI)-II scores at 3 and 12 months after hospital discharge
+
+All outcomes will be examined using multivariable regression, adjusting for potential confounders. Specific regression type and confounders will be detailed in each section.
+
+```{r setup, message = FALSE, results = "hide"}
+## Set default options
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+options(width = 100)
+
+## Load libraries
+suppressPackageStartupMessages(library(huxtable))
+suppressPackageStartupMessages(library(rms))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(stringr))
+suppressPackageStartupMessages(library(naniar))
+suppressPackageStartupMessages(library(sparkline))
+suppressPackageStartupMessages(library(plotly))
+suppressPackageStartupMessages(library(JTHelpers))
+
+## Analysis data sets are stored in parent directory
+load("..//braindata.Rdata")
+
+## Patients with this level of withdrawal have no data; they'll be excluded
+wd_nodata <- c(
+  "2. W/D from Participation and All Data Collected",
+  "4. N/A Study Staff Withdrew Patient"
+)
+
+## Which variables will be modeled using restricted cubic splines in all
+## analyses? Create a string to use for pattern matching with stringr later
+rcs_vars <- c("age.enroll", "charlson.score", "stroke.risk", #"iqcode.score.e",
+              "ses.score", "apache.aps")
+rcs_replace_regex <- paste0(
+  "(",
+  paste(str_replace_all(rcs_vars, fixed("."), fixed("\\.")), collapse = "|"),
+  ")"
+)
+
+```
+
+# Depression vs Brain Dysfunction during Hospitalization
+
+```{r dcfd_prep, results = "hide"}
+## -- Dataset for running DCFD models ------------------------------------------
+## Variables involved in model
+dcfd_vars <- c("hx.depression", "dcfd.14.imp", "age.enroll", "sex.pp",
+               "charlson.score", "stroke.risk", "iqcode.score.e", "edu",
+               "ses.score", "frailty", "apache.aps")
+
+df_dcfds <- brain.oneobs %>%
+  filter(is.na(studywd.amt) | !(studywd.amt %in% wd_nodata)) %>%
+  ## Keep all variables involved in model, plus additional variables that may
+  ## be helpful during imputation
+  dplyr::select(id, one_of(dcfd_vars),
+                adl.e, faq.e, bmi, race.wb, sofa, smoke, alcohol) %>%
+  mutate(
+    ## Numeric version of frailty - treat as continuous
+    frailty = as.numeric(substr(as.character(frailty), 1, 1)),
+    ## We're only using race for imputation, not adjusting, and there are only
+    ## four patients who are neither black nor white. Combine these with Black.
+    race.wb = factor(ifelse(is.na(race.wb), NA,
+                     ifelse(race.wb == "White", 1, 2)),
+                     levels = 1:2, labels = c("White", "Non-White"))
+  )
+
+dd_dcfds <- datadist(df_dcfds)
+options(datadist = "dd_dcfds")
+
+## -- How much missingness is in DCFDs data? (Will we want to impute?) ---------
+misstable_dcfds <- miss_var_summary(df_dcfds[, dcfd_vars]) %>%
+  filter(percent > 0) %>%
+  rename("Variable" = "variable", "N Missing" = n_missing, "% Missing" = percent)
+
+missplot_dcfds <- gg_miss_var(df_dcfds[, dcfd_vars], show_pct = TRUE)
+
+## -- Sparkline to show distribution of DCFDs ----------------------------------
+dcfd_dist <- df_dcfds %>%
+  filter(!is.na(dcfd.14.imp)) %>%
+  group_by(dcfd.14.imp) %>%
+  summarise(count = n())
+
+spark_dcfds <- sparkline(
+  dcfd_dist$count,
+  type = 'bar',
+  barColor = "#117cad",
+  elementId = "sparkline-dcfds"
+)
+
+```
+
+All `r nrow(subset(brain.oneobs, is.na(studywd.amt) | !(studywd.amt %in% wd_nodata)))` patients enrolled in BRAIN-ICU who did not completely withdraw from all participation are eligible for inclusion. Due to the bimodal distribution of delirium/coma-free days in our cohort `r spark_dcfds`, we will use a proportional odds logistic regression model, which will adjust for the following covariates measured at ICU admission:
+
+- Age
+- Gender
+- Charlson
+- Framingham stroke risk
+- IQCODE
+- Years of education
+- AHRQ socioeconomic score
+- CSHA frailty
+- APACHE APS at enrollment
+
+All continuous covariates are allowed to have a nonlinear relationship with DCFDs using restricted cubic splines.
+
+## Missing Data
+
+We quickly examine the amount of missing data in this cohort to see if multiple imputation might be advisable.
+
+```{r dcfd_missing}
+ggplotly(missplot_dcfds) %>%
+  layout(title = "Proportion of Missingness in DCFD Outcome Data",
+         yaxis = list(title = ""),
+         showlegend = FALSE)
+
+```
+
+Most covariates have very little missingness, but we do have more than a negligible number of patients missing AHRQ socioeconomic score. These patients are likely different from patients with SES score available, as SES score is usually missing on patients whose addresses are difficult to geocode (eg, very rural areas). In addition, our primary exposure of history of depression is missing on quite a few patients. Therefore, we'll use multiple imputation to reduce the possibility of bias in our results.
+
+```{r dcfd_model, results = "hide"}
+## -- Multiple imputation using aregImpute() -----------------------------------
+## Some variables have too little variability to use splines; replace these
+## with I(var) for imputation formula
+dcfd_areg_vars <- setdiff(names(df_dcfds), "id") %>%
+  str_replace("(adl\\.e|faq\\.e|iqcode\\.score\\.e|frailty)", "I\\(\\1\\)")
+
+dcfd_areg_form <- as.formula(
+  paste("~", paste(dcfd_areg_vars, collapse = " + "))
+)
+
+set.seed(56)
+dcfd_areg <- aregImpute(dcfd_areg_form, data = df_dcfds)
+
+## -- Fit model ----------------------------------------------------------------
+## Will use restricted cubic splines for nonlinear terms; replace most
+## continuous variables' names with rcs(var, 3)
+dcfd_mod_vars <- str_replace(dcfd_vars, rcs_replace_regex, "rcs\\(\\1, 3\\)")
+
+dcfd_mod <- fit.mult.impute(
+  as.formula(
+    paste(
+      "dcfd.14.imp ~", paste(setdiff(dcfd_mod_vars, "dcfd.14.imp"),
+                             collapse = " + "
+      )
+    )
+  ),
+  data = df_dcfds,
+  xtrans = dcfd_areg,
+  fitter = lrm
+)
+
+dcfd_results <-
+  rms_model_results(dcfd_mod, rndDigits = 2) %>%
+  ## Remove long list of rows telling us how many patients have each DCFD value
+  ## (refer to sparkline above for distribution)
+  filter(is.na(as.numeric(label)))
+
+## Add column names manually - couldn't get huxtable to do this properly/quickly
+dcfd_results <- rbind(
+  c("Variable", "Ref Level", "Comparison", "Odds Ratio (95% CI)",
+    "X^2^", "df", "P"),
+  dcfd_results
+)
+
+dcfd_ht <- dcfd_results %>%
+  hux() %>%
+  set_align(row = everywhere, col = everywhere, byrow = TRUE,
+            value = c("left", rep("right", ncol(dcfd_results) - 1))) %>%
+  set_bold(row = 1, col = everywhere, TRUE) %>%
+  set_bottom_border(row = 1, col = everywhere, value = 1) %>%
+  set_text_color(
+    row = grep("^hx\\.depression$", dcfd_results$label, invert = TRUE),
+    col = everywhere,
+    value = "#838383"
+  ) %>%
+  set_width(0.9)
+
+## Numbers for text statement
+dcfd_or <- exp(coef(dcfd_mod)["hx.depression=Has history"])
+dcfd_reduction <- 1 - (dcfd_or / 1)
+dcfd_orci <- dcfd_results[grep("^hx\\.depression", dcfd_results$label), "est.ci"]
+
+```
+
+## Model Results
+
+A pre-admission history of depression, as ascertained by surrogate questionnaire, has an odds ratio (95% confidence interval) vs DCFDs of `r dcfd_orci`; this indicates that, after adjusting for potential confounders, patients with a documented history of depression have on average `r round(dcfd_reduction * 100)`% `r ifelse(dcfd_or < 1, "lower", "higher")` odds of more "good" days alive and free of brain dysfunction. (Put simply, pre-admission history of depression is marginally associated with worse brain dysfunction and/or mortality in the hospital.)
+
+```{r dcfd_results, results = "asis"}
+print_html(dcfd_ht)
+
+```
