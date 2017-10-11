@@ -30,6 +30,7 @@ suppressPackageStartupMessages(library(huxtable))
 suppressPackageStartupMessages(library(rms))
 suppressPackageStartupMessages(library(tidyverse))
 suppressPackageStartupMessages(library(stringr))
+suppressPackageStartupMessages(library(forcats))
 suppressPackageStartupMessages(library(naniar))
 suppressPackageStartupMessages(library(sparkline))
 suppressPackageStartupMessages(library(plotly))
@@ -273,5 +274,61 @@ dd_lt <- df_ltbase %>%
   datadist()
 
 options(datadist = "dd_lt")
+
+```
+
+We know that RBANS global cognition scores are normally distributed, so we will use multivariable regression models for both 3- and 12-month followup to determine the association between a pre-admission reported history of depression and global cognition. Both models will adjust for the following potential confounders, measured at ICU admission, summarized over the ICU course, or (in the case of BDI) measured concurrent with the outcome:
+
+- Age at enrollment
+- Charlson comorbidity index
+– Framingham Stroke Risk Profile
+- IQCODE
+- Years of education
+- Apolipoprotein E genotype
+- Mean modified SOFA score in the ICU ("modified" = GCS is not included)
+- Days of delirium in the hospital
+- Days of coma in the hospital
+- Days of severe sepsis in the ICU
+- Intervals where O2 saturations <90% in the ICU
+- BDI score post-ICU
+
+Except for IQCODE (which has too little variability to allow splines), all continuous covariates will be allowed to have a nonlinear relationship with our outcome using restricted cubic splines.
+
+In all long-term models, we'll include patients who had any assessment data available at a given time point (even if the outcome of interest is missing). This means that a) we'll have the same number of patients in RBANS and BDI models at a given time point, and b) we'll need to handle some missing outcome and covariate data using multiple imputation, particularly because there are likely to be differences between patients with and without outcome data available.
+
+## Missing Data
+
+We have `r nrow(df_lt3)` patients included in our long-term models at 3 months, and `r nrow(df_lt12)` patients included at 12 months. Below, we show the proportion of missingness for each variable included in the RBANS models by time point.
+
+```{r rbans_missing}
+## -- How much missingness is in RBANS data? (Will we want to impute?) ---------
+## Create a single df with missingness for both time points
+misstable_rbans <- df_ltbase %>%
+  filter(fu.period %in% paste(c(3, 12), "Month") & any_outcomes) %>%
+  mutate(fu.period = fct_relevel(as.character(fu.period), "3 Month")) %>%
+  group_by(fu.period) %>%
+  dplyr::select(one_of(rbans_vars)) %>%
+  miss_var_summary()
+
+## This code is modified from Nick Tierney's naniar package - function doesn't
+## currently allow easy faceting (hmm, maybe I should make a PR at some point)
+missplot_rbans <-
+  ggplot(data = misstable_rbans,
+         aes(x = stats::reorder(variable, percent), y = percent, colour = variable)) +
+  facet_wrap(~ fu.period) +
+  geom_bar(stat = "identity", position = "dodge", width = 0) +
+  geom_point() +
+  coord_flip() +
+  scale_color_discrete(guide = FALSE) +
+  labs(y = "Proportion Missing", x = "") +
+  theme_minimal()
+
+```
+
+```{r rbans_missing_plot}
+ggplotly(missplot_rbans) %>%
+    layout(title = "Proportion of Missingness in RBANS Outcome Data",
+           yaxis = list(title = ""),
+           showlegend = FALSE)
 
 ```
