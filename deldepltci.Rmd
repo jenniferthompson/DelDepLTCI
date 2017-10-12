@@ -344,7 +344,7 @@ misstable_rbans <- df_lt_base %>%
   filter(fu.period %in% paste(c(3, 12), "Month") & any_outcomes) %>%
   mutate(fu.period = fct_relevel(as.character(fu.period), "3 Month")) %>%
   group_by(fu.period) %>%
-  dplyr::select(one_of(rbans_vars)) %>%
+  dplyr::select(one_of(rbans_vars), "sex.pp") %>%
   miss_var_summary()
 
 ## This code is modified from Nick Tierney's naniar package - function doesn't
@@ -452,5 +452,106 @@ Patients with a pre-admission history of depression, as ascertained by surrogate
 
 ```{r rbans_results_12, results = "asis"}
 print_html(rbans_ht_12)
+
+```
+
+# Depression vs Depression Scores after Hospitalization
+
+```{r bdi_sparkline}
+## -- Sparkline to show distribution of BDI at both time points ----------------
+bdi_dist <- df_lt_base %>%
+  filter(!is.na(bdi.totscore)) %>%
+  group_by(fu.period, bdi.totscore) %>%
+  summarise(count = n())
+
+spark_bdi_3 <- sparkline(
+  filter(bdi_dist, fu.period == "3 Month") %>% pull(count),
+  type = 'bar',
+  barColor = "#117cad",
+  elementId = "sparkline-bdi-3"
+)
+
+spark_bdi_12 <- sparkline(
+  filter(bdi_dist, fu.period == "12 Month") %>% pull(count),
+  type = 'bar',
+  barColor = "#117cad",
+  elementId = "sparkline-bdi-12"
+)
+
+```
+
+Severity of depression is measured in our cohort using the Beck Depression Inventory II (BDI-II), which has an irregular distribution (3m: `r spark_bdi_3`; 12m: `r spark_bdi_12`). Therefore, we will use proportional odds logistic regression models for both 3- and 12-month followup to determine the association between a pre-admission reported history of depression and severity of depression after discharge. Both models will adjust for the following potential confounders, measured at ICU admission or summarized over the ICU course:
+
+- Age at enrollment
+- Gender
+- Charlson comorbidity index
+– Framingham Stroke Risk Profile
+- IQCODE
+- Mean modified SOFA score in the ICU ("modified" = GCS is not included)
+
+Except for IQCODE (which has too little variability to allow splines), all continuous covariates will be allowed to have a nonlinear relationship with our outcome using restricted cubic splines.
+
+As noted in the RBANS section, in all long-term models, we'll include patients who had any assessment data available at a given time point (even if the outcome of interest is missing). Please refer to that section for details on missingness in patients included in these models.
+
+```{r bdi_models, results = "hide"}
+## -- Fit model ----------------------------------------------------------------
+## Will use restricted cubic splines for nonlinear terms; replace most
+## continuous variables' names with rcs(var, 3)
+bdi_mod_vars <-
+  str_replace(setdiff(bdi_vars, "bdi.totscore"), rcs_replace_regex, "rcs\\(\\1, 3\\)")
+
+fit_bdi_mod <- function(df, aregobj){
+  fit.mult.impute(
+    as.formula(paste("bdi.totscore ~", paste(bdi_mod_vars, collapse = " + "))),
+    data = df,
+    xtrans = aregobj,
+    fitter = lrm
+  )
+}
+
+bdi_mod_3 <- fit_bdi_mod(df = df_lt_3, aregobj = lt_areg_3)
+bdi_mod_12 <- fit_bdi_mod(df = df_lt_12, aregobj = lt_areg_12)
+
+bdi_results_3 <- rms_model_results(bdi_mod_3, rndDigits = 2) %>%
+  filter(is.na(as.numeric(label)))
+bdi_results_12 <- rms_model_results(bdi_mod_12, rndDigits = 2) %>%
+  filter(is.na(as.numeric(label)))
+
+## Add column names manually - couldn't get huxtable to do this properly/quickly
+bdi_colnames <- c("Variable", "Ref Level", "Comparison", "Odds Ratio (95% CI)",
+                  "X^2^", "df", "P")
+bdi_results_3 <- rbind(bdi_colnames, bdi_results_3)
+bdi_results_12 <- rbind(bdi_colnames, bdi_results_12)
+
+## Make huxtables
+bdi_ht_3 <- make_modresults_ht(bdi_results_3)
+bdi_ht_12 <- make_modresults_ht(bdi_results_12)
+
+## Numbers for text statement
+bdi_or_3 <- exp(coef(bdi_mod_3)["hx.depression=Has history"])
+bdi_change_3 <- ifelse(bdi_or_3 < 1, 1 - (bdi_or_3 / 1), bdi_or_3 / 1)
+bdi_orci_3 <- bdi_results_3[grep("^hx\\.depression", bdi_results_3$label), "est.ci"]
+
+bdi_or_12 <- exp(coef(bdi_mod_12)["hx.depression=Has history"])
+bdi_change_12 <- ifelse(bdi_or_12 < 1, 1 - (bdi_or_12 / 1), bdi_or_12 / 1)
+bdi_orci_12 <- bdi_results_12[grep("^hx\\.depression", bdi_results_12$label), "est.ci"]
+
+```
+
+## Model Results, 3M
+
+Patients with a pre-admission history of depression, as ascertained by surrogate questionnaire, have on average a difference (95% confidence interval) of `r bdi_orci_3` points on the RBANS global battery three months after discharge; this indicates that, after adjusting for potential confounders including concurrent depression score, there is no meaningful difference in global cognition between patients with and without a pre-admission history of depression.
+
+```{r bdi_results_3, results = "asis"}
+print_html(bdi_ht_3)
+
+```
+
+## Model Results, 12M
+
+Patients with a pre-admission history of depression, as ascertained by surrogate questionnaire, have on average a difference (95% confidence interval) of `r bdi_orci_12` points on the RBANS global battery twelve months after discharge; this indicates that, after adjusting for potential confounders including concurrent depression score, there is no meaningful difference in global cognition between patients with and without a pre-admission history of depression.
+
+```{r bdi_results_12, results = "asis"}
+print_html(bdi_ht_12)
 
 ```
