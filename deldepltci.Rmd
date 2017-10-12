@@ -60,7 +60,10 @@ wd_nodata <- c(
 ## Which variables will be modeled using restricted cubic splines in all
 ## analyses? Create a string to use for pattern matching with stringr later
 rcs_vars <- c("age.enroll", "charlson.score", "stroke.risk", #"iqcode.score.e",
-              "ses.score", "apache.aps")
+              "ses.score", "edu", "apache.aps", "mean.modsofa.icu", "del.s.imp",
+              "coma.s.imp", "ints.sat.l90.s", "icudays.sevseptic.s",
+              "bdi.totscore")
+
 rcs_replace_regex <- paste0(
   "(",
   paste(str_replace_all(rcs_vars, fixed("."), fixed("\\.")), collapse = "|"),
