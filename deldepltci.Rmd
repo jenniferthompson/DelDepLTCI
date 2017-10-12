@@ -66,7 +66,23 @@ rcs_vars <- c("age.enroll", "charlson.score", "stroke.risk", #"iqcode.score.e",
 
 rcs_replace_regex <- paste0(
   "(",
-  paste(str_replace_all(rcs_vars, fixed("."), fixed("\\.")), collapse = "|"),
+  paste(
+    paste0("^", str_replace_all(rcs_vars, fixed("."), fixed("\\.")), "$"),
+    collapse = "|"
+  ),
+  ")"
+)
+
+## Which variables will be included in imputation as strictly linear?
+lin_vars <- c("adl.e", "adl.totscore", "faq.e", "faq.totscore", "frailty",
+              "frailty.fu", "iqcode.score.e")
+
+lin_replace_regex <- paste0(
+  "(",
+  paste(
+    paste0("^", str_replace_all(lin_vars, fixed("."), fixed("\\.")), "$"),
+    collapse = "|"
+  ),
   ")"
 )
 
@@ -146,7 +162,7 @@ Most covariates have very little missingness, but we do have more than a negligi
 ## Some variables have too little variability to use splines; replace these
 ## with I(var) for imputation formula
 dcfd_areg_vars <- setdiff(names(df_dcfds), "id") %>%
-  str_replace("(adl\\.e|faq\\.e|iqcode\\.score\\.e|frailty)", "I\\(\\1\\)")
+  str_replace(lin_replace_regex, "I\\(\\1)")
 
 dcfd_areg_form <- as.formula(
   paste("~", paste(dcfd_areg_vars, collapse = " + "))
@@ -256,7 +272,7 @@ df_ltbase <- brain.fu %>%
     dplyr::select(
       brain.oneobs,
       id, one_of(rbans_vars), one_of(bdi_vars), one_of(dcfd_vars),
-      bmi, race.wb, frailty, sofa, smoke, alcohol
+      bmi, race.wb, frailty, smoke, alcohol
     ),
     by = "id"
   ) %>%
@@ -335,3 +351,6 @@ ggplotly(missplot_rbans) %>%
            showlegend = FALSE)
 
 ```
+
+Many covariates have very little missingness, but we do have quite a few missing both our outcome of RBANS global scores and important covariates, including our main exposure of pre-admission depression. These patients are likely different from patients with complete data; it is especially likely that there are differences between patients who had complete RBANS and BDI data and those who did not. Therefore, we'll use multiple imputation to reduce the possibility of bias in our results, including all patients with at least partial long-term outcomes data at a given time point.
+
