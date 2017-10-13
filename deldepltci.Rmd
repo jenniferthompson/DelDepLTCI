@@ -111,7 +111,7 @@ make_modresults_ht <- function(resultsdf){
 
 ```
 
-# Depression vs Brain Dysfunction during Hospitalization
+# Depression vs Delirium/Coma-Free Days during Hospitalization
 
 ```{r dcfd_prep, results = "hide"}
 ## -- Dataset for running DCFD models ------------------------------------------
@@ -135,7 +135,9 @@ misstable_dcfds <- miss_var_summary(df_dcfds[, dcfd_vars]) %>%
   filter(percent > 0) %>%
   rename("Variable" = "variable", "N Missing" = n_missing, "% Missing" = percent)
 
-missplot_dcfds <- gg_miss_var(df_dcfds[, dcfd_vars], show_pct = TRUE)
+missplot_dcfds <- gg_miss_var(df_dcfds[, dcfd_vars], show_pct = TRUE) +
+  geom_hline(yintercept = 5, colour = "grey50", linetype = "dotted") +
+  scale_y_continuous(name = "% Missing", limits = c(0, 100))
 
 ## -- Sparkline to show distribution of DCFDs ----------------------------------
 dcfd_dist <- df_dcfds %>%
@@ -164,21 +166,21 @@ All `r nrow(subset(brain.oneobs, is.na(studywd.amt) | !(studywd.amt %in% wd_noda
 - CSHA frailty
 - APACHE APS at enrollment
 
-All continuous covariates are allowed to have a nonlinear relationship with DCFDs using restricted cubic splines.
+All continuous covariates are allowed to have a nonlinear relationship with DCFDs using restricted cubic splines with three knots.
 
 ## Missing Data
 
-We quickly examine the amount of missing data in this cohort to see if multiple imputation might be advisable.
+We quickly examine the amount of missing data in this cohort to see if multiple imputation might be advisable. A reference line at 5% missing is included; below this level, we typically aren't terribly concerned about missing data.
 
 ```{r dcfd_missing}
 ggplotly(missplot_dcfds) %>%
-  layout(title = "Proportion of Missingness in DCFD Outcome Data",
+  layout(title = "Missingness in DCFD Outcome Data",
          yaxis = list(title = ""),
          showlegend = FALSE)
 
 ```
 
-Most covariates have very little missingness, but we do have more than a negligible number of patients missing AHRQ socioeconomic score. These patients are likely different from patients with SES score available, as SES score is usually missing on patients whose addresses are difficult to geocode (eg, very rural areas). In addition, our primary exposure of history of depression is missing on quite a few patients. Therefore, we'll use multiple imputation to reduce the possibility of bias in our results.
+Most covariates have very little missingness, but we do have more than a negligible number of patients missing AHRQ socioeconomic score. These patients are likely different from patients with SES score available, as SES score is usually missing on patients whose addresses are difficult to geocode (eg, very rural areas). In addition, our primary exposure of history of depression is missing on quite a few patients. Therefore, we'll use multiple imputation to reduce the possibility of bias in our results, using five imputations (with three burn-in imputations) and predictive mean matching.
 
 ```{r dcfd_model, results = "hide"}
 ## -- Multiple imputation using aregImpute() -----------------------------------
@@ -236,7 +238,7 @@ dcfd_orci <- dcfd_results[grep("^hx\\.depression", dcfd_results$label), "est.ci"
 
 ## Model Results
 
-A pre-admission history of depression, as ascertained by surrogate questionnaire, has an odds ratio (95% confidence interval) vs DCFDs of `r dcfd_orci`; this indicates that, after adjusting for potential confounders, patients with a documented history of depression have on average `r round(dcfd_reduction * 100)`% `r ifelse(dcfd_or < 1, "lower", "higher")` odds of more "good" days alive and free of brain dysfunction. (Put simply, pre-admission history of depression is marginally associated with worse brain dysfunction and/or mortality in the hospital.)
+A pre-admission history of depression, as ascertained by surrogate questionnaire, has an odds ratio (95% confidence interval) vs DCFDs of `r dcfd_orci`; this indicates that, after adjusting for potential confounders, patients with a documented history of depression have on average `r round(dcfd_reduction * 100)`% `r ifelse(dcfd_or < 1, "lower", "higher")` odds of more "good" days alive and free of brain dysfunction. (Put simply, pre-admission history of depression is marginally associated with worse brain dysfunction and/or mortality in the hospital; **importantly**, we cannot tell from this analysis whether depression is associated mostly with delirium, coma, mortality, and/or some combination of the three.)
 
 ```{r dcfd_results, results = "asis"}
 print_html(dcfd_ht)
@@ -260,7 +262,7 @@ To examine the association of a reported pre-admission history of depression wit
 - Days of severe sepsis in the ICU
 - Intervals where O2 saturations <90% in the ICU
 
-Except for IQCODE (which has too little variability to allow splines), all continuous covariates will be allowed to have a nonlinear relationship with our outcome using restricted cubic splines.
+Except for IQCODE (which has too little variability to allow splines), all continuous covariates will be allowed to have a nonlinear relationship with our outcome using restricted cubic splines with three knots.
 
 In all long-term models, we'll include patients who had any assessment data available at a given time point (even if the outcome of interest is missing). This means that a) we'll have the same number of patients in RBANS and BDI models at a given time point, and b) we'll need to handle some missing outcome and covariate data using multiple imputation, particularly because there are likely to be differences between patients with and without outcome data available.
 
@@ -331,7 +333,7 @@ options(datadist = "dd_lt")
 
 ## Missing Data
 
-We have `r nrow(df_lt_3)` patients included in our long-term models at 3 months, and `r nrow(df_lt_12)` patients included at 12 months. Below, we show the proportion of missingness for each variable included in long-term models by time point.
+We have `r nrow(df_lt_3)` patients included in our long-term models at 3 months, and `r nrow(df_lt_12)` patients included at 12 months. Below, we show the proportion of missingness for each variable included in long-term models by time point. A reference line at 5% missing is included; below this level, we typically aren't terribly concerned about missing data.
 
 ```{r ltci_missing}
 ## -- How much missingness is in LTCI data? (Will we want to impute?) ---------
@@ -351,22 +353,24 @@ missplot_ltci <-
   facet_wrap(~ fu.period) +
   geom_bar(stat = "identity", position = "dodge", width = 0) +
   geom_point() +
+  geom_hline(yintercept = 5, colour = "grey50", linetype = "dotted") +
+  scale_y_continuous(name = "% Missing", limits = c(0, 100)) +
   coord_flip() +
   scale_color_discrete(guide = FALSE) +
-  labs(y = "Proportion Missing", x = "") +
+  labs(x = "") +
   theme_minimal()
 
 ```
 
 ```{r ltci_missing_plot}
 ggplotly(missplot_ltci) %>%
-    layout(title = "Proportion of Missingness in Long-Term Outcomes Data",
+    layout(title = "Missingness in Long-Term Outcomes Data",
            yaxis = list(title = ""),
            showlegend = FALSE)
 
 ```
 
-Many covariates have very little missingness, but we do have quite a few missing both our outcomes and important covariates, including our main exposure of pre-admission depression. These patients are likely different from patients with complete data; it is especially likely that there are differences between patients who had complete RBANS and BDI data and those who did not. Therefore, we'll use multiple imputation to reduce the possibility of bias in our results, including all patients with at least partial long-term outcomes data at a given time point.
+Many covariates have very little missingness, but we do have quite a few missing both our outcomes and important covariates, including our main exposure of pre-admission depression. These patients are likely different from patients with complete data; it is especially likely that there are differences between patients who had complete RBANS and BDI data and those who did not. Therefore, we'll use multiple imputation to reduce the possibility of bias in our results, including all patients with at least partial long-term outcomes data at a given time point. Specifically, we'll use five imputations (with three burn-in imputations) and predictive mean matching.
 
 ```{r lt_impute, results = "hide"}
 ## -- Imputation objects for RBANS, BDI models ---------------------------------
