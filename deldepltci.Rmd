@@ -93,6 +93,8 @@ make_modresults_ht <- function(resultsdf){
     ## Align variable name to left, all other columns to right
     set_align(row = everywhere, col = everywhere, byrow = TRUE,
               value = c("left", rep("right", ncol(resultsdf) - 1))) %>%
+    ## Set p-value column to three decimal places by default
+    set_number_format(row = everywhere, col = 7, value = 3) %>%
     ## Bold column headers, add line after first row
     set_bold(row = 1, col = everywhere, TRUE) %>%
     set_bottom_border(row = 1, col = everywhere, value = 1) %>%
@@ -241,7 +243,26 @@ print_html(dcfd_ht)
 
 ```
 
-# Depression vs Global Cognition after Hospitalization
+# Depression vs Long-Term Outcomes
+
+To examine the association of a reported pre-admission history of depression with long-term cognition and depression, we will use multivariable regression with history of depression as our primary exposure of interest and either RBANS global cognition scores or Beck Depression Inventory II (BDI-II) depression scores as our outcomes, using separate models for scores at 3 and 12 months after hospital discharge. All models will adjust for the following potential confounders, measured at ICU admission or summarized over the ICU course:
+
+- Age at enrollment
+- Gender
+- Charlson comorbidity index
+– Framingham Stroke Risk Profile
+- IQCODE
+- Years of education
+- Apolipoprotein E genotype
+- Mean modified SOFA score in the ICU ("modified" = GCS is not included)
+- Days of delirium in the hospital
+- Days of coma in the hospital
+- Days of severe sepsis in the ICU
+- Intervals where O2 saturations <90% in the ICU
+
+Except for IQCODE (which has too little variability to allow splines), all continuous covariates will be allowed to have a nonlinear relationship with our outcome using restricted cubic splines.
+
+In all long-term models, we'll include patients who had any assessment data available at a given time point (even if the outcome of interest is missing). This means that a) we'll have the same number of patients in RBANS and BDI models at a given time point, and b) we'll need to handle some missing outcome and covariate data using multiple imputation, particularly because there are likely to be differences between patients with and without outcome data available.
 
 ```{r ltoutcomes_prep, results = "hide"}
 ## -- Datasets for running long-term outcome models ----------------------------
@@ -258,22 +279,17 @@ lt_outcomes <- c("bdi.totscore", "bpi.intense", "bpi.inter", "pcl.totscore",
 ## Indicator for whether patient had any of above at each followup time point
 brain.fu$any_outcomes <- rowSums(!is.na(brain.fu[,lt_outcomes])) > 0
 
-## Variables involved in model
-rbans_vars <- c("hx.depression", "rbans.global.score", "age.enroll", "e4.type",
-                "edu", "iqcode.score.e", "charlson.score", "stroke.risk",
-                "mean.modsofa.icu", "del.s.imp", "coma.s.imp", "ints.sat.l90.s",
-                "icudays.sevseptic.s", "bdi.totscore")
-
-bdi_vars <- c("hx.depression", "bdi.totscore", "age.enroll", "sex.pp",
-              "charlson.score", "stroke.risk", "iqcode.score.e",
-              "mean.modsofa.icu")
+## Variables involved in LTCI models (same covariates for BDI, LTCI)
+ltci_vars <- c("hx.depression", "rbans.global.score", "bdi.totscore",
+               "age.enroll", "sex.pp", "e4.type", "edu", "iqcode.score.e",
+               "charlson.score", "stroke.risk", "mean.modsofa.icu", "del.s.imp",
+               "coma.s.imp", "ints.sat.l90.s", "icudays.sevseptic.s")
 
 ## Starting point data set for all long-term outcomes: merge variables from
 ## brain.oneobs onto brain.fu (this would be inefficient if our data were very
 ## large... but it's not)
 df_lt_base <- brain.fu %>%
-  dplyr::select(id, fu.period, any_outcomes,
-                one_of(rbans_vars), one_of(bdi_vars),
+  dplyr::select(id, fu.period, any_outcomes, one_of(ltci_vars),
                 adl.totscore, faq.totscore, frailty.fu) %>%
                 ## Was going to include domains/Trails in imputation, but too
                 ## many variables in was causing problems, and domains/Trails
@@ -288,8 +304,7 @@ df_lt_base <- brain.fu %>%
   left_join(
     dplyr::select(
       brain.oneobs,
-      id, one_of(rbans_vars), one_of(bdi_vars), one_of(dcfd_vars),
-      bmi, race.wb, smoke, alcohol
+      id, one_of(ltci_vars), one_of(dcfd_vars), bmi, race.wb, smoke, alcohol
     ),
     by = "id"
   ) %>%
@@ -314,43 +329,24 @@ options(datadist = "dd_lt")
 
 ```
 
-We know that RBANS global cognition scores are normally distributed, so we will use multivariable regression models for both 3- and 12-month followup to determine the association between a pre-admission reported history of depression and global cognition. Both models will adjust for the following potential confounders, measured at ICU admission, summarized over the ICU course, or (in the case of BDI) measured concurrent with the outcome:
-
-- Age at enrollment
-- Charlson comorbidity index
-– Framingham Stroke Risk Profile
-- IQCODE
-- Years of education
-- Apolipoprotein E genotype
-- Mean modified SOFA score in the ICU ("modified" = GCS is not included)
-- Days of delirium in the hospital
-- Days of coma in the hospital
-- Days of severe sepsis in the ICU
-- Intervals where O2 saturations <90% in the ICU
-- BDI score post-ICU
-
-Except for IQCODE (which has too little variability to allow splines), all continuous covariates will be allowed to have a nonlinear relationship with our outcome using restricted cubic splines.
-
-In all long-term models, we'll include patients who had any assessment data available at a given time point (even if the outcome of interest is missing). This means that a) we'll have the same number of patients in RBANS and BDI models at a given time point, and b) we'll need to handle some missing outcome and covariate data using multiple imputation, particularly because there are likely to be differences between patients with and without outcome data available.
-
 ## Missing Data
 
-We have `r nrow(df_lt_3)` patients included in our long-term models at 3 months, and `r nrow(df_lt_12)` patients included at 12 months. Below, we show the proportion of missingness for each variable included in the RBANS models by time point.
+We have `r nrow(df_lt_3)` patients included in our long-term models at 3 months, and `r nrow(df_lt_12)` patients included at 12 months. Below, we show the proportion of missingness for each variable included in long-term models by time point.
 
-```{r rbans_missing}
-## -- How much missingness is in RBANS data? (Will we want to impute?) ---------
+```{r ltci_missing}
+## -- How much missingness is in LTCI data? (Will we want to impute?) ---------
 ## Create a single df with missingness for both time points
-misstable_rbans <- df_lt_base %>%
+misstable_ltci <- df_lt_base %>%
   filter(fu.period %in% paste(c(3, 12), "Month") & any_outcomes) %>%
   mutate(fu.period = fct_relevel(as.character(fu.period), "3 Month")) %>%
   group_by(fu.period) %>%
-  dplyr::select(one_of(rbans_vars), "sex.pp") %>%
+  dplyr::select(one_of(ltci_vars)) %>%
   miss_var_summary()
 
 ## This code is modified from Nick Tierney's naniar package - function doesn't
 ## currently allow easy faceting (hmm, maybe I should make a PR at some point)
-missplot_rbans <-
-  ggplot(data = misstable_rbans,
+missplot_ltci <-
+  ggplot(data = misstable_ltci,
          aes(x = stats::reorder(variable, percent), y = percent, colour = variable)) +
   facet_wrap(~ fu.period) +
   geom_bar(stat = "identity", position = "dodge", width = 0) +
@@ -362,17 +358,17 @@ missplot_rbans <-
 
 ```
 
-```{r rbans_missing_plot}
-ggplotly(missplot_rbans) %>%
-    layout(title = "Proportion of Missingness in RBANS Outcome Data",
+```{r ltci_missing_plot}
+ggplotly(missplot_ltci) %>%
+    layout(title = "Proportion of Missingness in Long-Term Outcomes Data",
            yaxis = list(title = ""),
            showlegend = FALSE)
 
 ```
 
-Many covariates have very little missingness, but we do have quite a few missing both our outcome of RBANS global scores and important covariates, including our main exposure of pre-admission depression. These patients are likely different from patients with complete data; it is especially likely that there are differences between patients who had complete RBANS and BDI data and those who did not. Therefore, we'll use multiple imputation to reduce the possibility of bias in our results, including all patients with at least partial long-term outcomes data at a given time point.
+Many covariates have very little missingness, but we do have quite a few missing both our outcomes and important covariates, including our main exposure of pre-admission depression. These patients are likely different from patients with complete data; it is especially likely that there are differences between patients who had complete RBANS and BDI data and those who did not. Therefore, we'll use multiple imputation to reduce the possibility of bias in our results, including all patients with at least partial long-term outcomes data at a given time point.
 
-```{r lt_impute}
+```{r lt_impute, results = "hide"}
 ## -- Imputation objects for RBANS, BDI models ---------------------------------
 ## -- (we can use the same aregImpute objects for both) ------------------------
 ## -- Multiple imputation using aregImpute() -----------------------------------
@@ -391,11 +387,15 @@ lt_areg_12 <- aregImpute(lt_areg_form, data = df_lt_12)
 
 ```
 
+## Depression vs Global Cognition after Hospitalization
+
+We know that RBANS global cognition scores are normally distributed, so we will use multivariable regression models for both 3- and 12-month followup to determine the association between a pre-admission reported history of depression and global cognition.
+
 ```{r rbans_models, results = "hide"}
 ## -- Fit model ----------------------------------------------------------------
 ## Will use restricted cubic splines for nonlinear terms; replace most
 ## continuous variables' names with rcs(var, 3)
-rbans_mod_vars <- str_replace(rbans_vars, rcs_replace_regex, "rcs\\(\\1, 3\\)")
+rbans_mod_vars <- str_replace(ltci_vars, rcs_replace_regex, "rcs\\(\\1, 3\\)")
 
 fit_rbans_mod <- function(df, aregobj){
   fit.mult.impute(
@@ -437,25 +437,25 @@ rbans_diffci_12 <-
 
 ```
 
-## Model Results, 3M
+### Model Results, 3M
 
-Patients with a pre-admission history of depression, as ascertained by surrogate questionnaire, have on average a difference (95% confidence interval) of `r rbans_diffci_3` points on the RBANS global battery three months after discharge; this indicates that, after adjusting for potential confounders including concurrent depression score, there is no meaningful difference in global cognition between patients with and without a pre-admission history of depression.
+Compared to patients with no documented history of depression, patients with a pre-admission history of depression as ascertained by surrogate questionnaire have, on average, a difference of `r rbans_diffci_3` points on the RBANS global cognition battery three months after hospital discharge. This indicates that in our cohort, after taking into account other available covariates, there is no meaningful difference in global cognition between survivors of critical illness with and without a pre-admission history of depression.
 
 ```{r rbans_results_3, results = "asis"}
 print_html(rbans_ht_3)
 
 ```
 
-## Model Results, 12M
+### Model Results, 12M
 
-Patients with a pre-admission history of depression, as ascertained by surrogate questionnaire, have on average a difference (95% confidence interval) of `r rbans_diffci_12` points on the RBANS global battery twelve months after discharge; this indicates that, after adjusting for potential confounders including concurrent depression score, there is no meaningful difference in global cognition between patients with and without a pre-admission history of depression.
+Compared to patients with no documented history of depression, patients with a pre-admission history of depression as ascertained by surrogate questionnaire have, on average, a difference of `r rbans_diffci_12` points on the RBANS global cognition battery a year after discharge. This indicates that in our cohort, after taking into account other available covariates, there is no meaningful difference in global cognition between survivors of critical illness with and without a pre-admission history of depression.
 
 ```{r rbans_results_12, results = "asis"}
 print_html(rbans_ht_12)
 
 ```
 
-# Depression vs Depression Scores after Hospitalization
+## Depression vs Depression Scores after Hospitalization
 
 ```{r bdi_sparkline}
 ## -- Sparkline to show distribution of BDI at both time points ----------------
@@ -480,25 +480,16 @@ spark_bdi_12 <- sparkline(
 
 ```
 
-Severity of depression is measured in our cohort using the Beck Depression Inventory II (BDI-II), which has an irregular distribution (3m: `r spark_bdi_3`; 12m: `r spark_bdi_12`). Therefore, we will use proportional odds logistic regression models for both 3- and 12-month followup to determine the association between a pre-admission reported history of depression and severity of depression after discharge. Both models will adjust for the following potential confounders, measured at ICU admission or summarized over the ICU course:
+Severity of depression is measured in our cohort using the BDI-II, which has an irregular distribution (3m: `r spark_bdi_3`; 12m: `r spark_bdi_12`). Therefore, we will use proportional odds logistic regression models for both 3- and 12-month followup to determine the association between a pre-admission reported history of depression and severity of depression after discharge.
 
-- Age at enrollment
-- Gender
-- Charlson comorbidity index
-– Framingham Stroke Risk Profile
-- IQCODE
-- Mean modified SOFA score in the ICU ("modified" = GCS is not included)
-
-Except for IQCODE (which has too little variability to allow splines), all continuous covariates will be allowed to have a nonlinear relationship with our outcome using restricted cubic splines.
-
-As noted in the RBANS section, in all long-term models, we'll include patients who had any assessment data available at a given time point (even if the outcome of interest is missing). Please refer to that section for details on missingness in patients included in these models.
+As noted in the RBANS section, in all long-term models, we'll include patients who had any assessment data available at a given time point (even if the outcome of interest is missing).
 
 ```{r bdi_models, results = "hide"}
 ## -- Fit model ----------------------------------------------------------------
 ## Will use restricted cubic splines for nonlinear terms; replace most
 ## continuous variables' names with rcs(var, 3)
 bdi_mod_vars <-
-  str_replace(setdiff(bdi_vars, "bdi.totscore"), rcs_replace_regex, "rcs\\(\\1, 3\\)")
+  str_replace(setdiff(ltci_vars, "bdi.totscore"), rcs_replace_regex, "rcs\\(\\1, 3\\)")
 
 fit_bdi_mod <- function(df, aregobj){
   fit.mult.impute(
@@ -538,18 +529,18 @@ bdi_orci_12 <- bdi_results_12[grep("^hx\\.depression", bdi_results_12$label), "e
 
 ```
 
-## Model Results, 3M
+### Model Results, 3M
 
-Patients with a pre-admission history of depression, as ascertained by surrogate questionnaire, have on average a difference (95% confidence interval) of `r bdi_orci_3` points on the RBANS global battery three months after discharge; this indicates that, after adjusting for potential confounders including concurrent depression score, there is no meaningful difference in global cognition between patients with and without a pre-admission history of depression.
+Compared to patients with no documented history of depression, patients with a pre-admission history of depression as ascertained by surrogate questionnaire have, on average, `r bdi_orci_3` times the odds of a higher BDI-II score three months after discharge after adjusting for potential confounders. This indicates that in our cohort, after taking into account other available covariates, survivors of critical illness with a pre-admission history of depression are more likely to have more severe depression three months after hospitalization.
 
 ```{r bdi_results_3, results = "asis"}
 print_html(bdi_ht_3)
 
 ```
 
-## Model Results, 12M
+### Model Results, 12M
 
-Patients with a pre-admission history of depression, as ascertained by surrogate questionnaire, have on average a difference (95% confidence interval) of `r bdi_orci_12` points on the RBANS global battery twelve months after discharge; this indicates that, after adjusting for potential confounders including concurrent depression score, there is no meaningful difference in global cognition between patients with and without a pre-admission history of depression.
+Compared to patients with no documented history of depression, patients with a pre-admission history of depression as ascertained by surrogate questionnaire have, on average, `r bdi_orci_12` times the odds of a higher BDI-II score twelve months after discharge after adjusting for potential confounders. This indicates that in our cohort, after taking into account other available covariates, survivors of critical illness with a pre-admission history of depression are more likely to have more severe depression a year after hospitalization.
 
 ```{r bdi_results_12, results = "asis"}
 print_html(bdi_ht_12)
